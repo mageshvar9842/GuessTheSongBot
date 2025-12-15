@@ -1,19 +1,14 @@
 import json
-import re
 import random
 
 import discord
 from discord.ext import commands
-import spotipy
-from spotipy.oauth2 import SpotifyClientCredentials
 
 with open("config.json") as f:
     config = json.load(f)
 
 TOKEN = config["DISCORD_TOKEN"]
 BOT_ID = config["DISCORD_BOT_ID"]
-SPOTIFY_CLIENT_ID = config.get("SPOTIFY_CLIENT_ID", "")
-SPOTIFY_CLIENT_SECRET = config.get("SPOTIFY_CLIENT_SECRET", "")
 
 bot = commands.Bot(
     command_prefix=None,
@@ -22,138 +17,67 @@ bot = commands.Bot(
     intents=discord.Intents.all(),
 )
 
-try:
-    sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials(
-        client_id=SPOTIFY_CLIENT_ID,
-        client_secret=SPOTIFY_CLIENT_SECRET
-    ))
-except Exception:
-    sp = None
+active_games = {}
 
 
-def extract_spotify_id(url_or_id, content_type):
-    if not url_or_id:
-        return None
-    
-    patterns = {
-        'playlist': r'playlist[/:]([a-zA-Z0-9]+)',
-        'album': r'album[/:]([a-zA-Z0-9]+)',
-        'track': r'track[/:]([a-zA-Z0-9]+)'
-    }
-    
-    if content_type in patterns:
-        match = re.search(patterns[content_type], url_or_id)
-        if match:
-            return match.group(1)
-    
-    if re.match(r'^[a-zA-Z0-9]+$', url_or_id):
-        return url_or_id
-    
-    return None
+def get_embed_color(guesses_left, max_guesses):
+    if guesses_left > max_guesses * 0.6:
+        return discord.Color.green()
+    elif guesses_left > max_guesses * 0.3:
+        return discord.Color.yellow()
+    else:
+        return discord.Color.red()
 
 
-def get_playlist_tracks(playlist_input):
-    if not sp:
-        return None, "Spotify API not configured"
+def create_game_embed(song_hint, guesses_left, max_guesses, previous_guesses=None):
+    color = get_embed_color(guesses_left, max_guesses)
     
-    playlist_id = extract_spotify_id(playlist_input, 'playlist')
-    if not playlist_id:
-        return None, "Invalid playlist URL or ID format"
+    embed = discord.Embed(
+        title="🎵 Guess the Song!",
+        description=f"**Hint:** {song_hint}",
+        color=color
+    )
     
-    try:
-        results = sp.playlist_tracks(playlist_id)
-        if not results or not results.get('items'):
-            return None, "Playlist is empty or not found"
-        
-        tracks = []
-        for item in results['items']:
-            if item and item.get('track'):
-                track = item['track']
-                tracks.append({
-                    'name': track.get('name', 'Unknown'),
-                    'artist': track['artists'][0]['name'] if track.get('artists') else 'Unknown',
-                    'id': track.get('id', '')
-                })
-        
-        if not tracks:
-            return None, "No valid tracks found in playlist"
-        
-        return tracks, None
-    except spotipy.exceptions.SpotifyException:
-        return None, "Playlist not found or is private"
-    except Exception:
-        return None, "Failed to fetch playlist data"
+    embed.add_field(
+        name="Guesses Remaining",
+        value=f"{guesses_left}/{max_guesses}",
+        inline=True
+    )
+    
+    if previous_guesses:
+        guesses_text = "\n".join([f"❌ {guess}" for guess in previous_guesses[-5:]])
+        embed.add_field(
+            name="Recent Guesses",
+            value=guesses_text if guesses_text else "None yet",
+            inline=False
+        )
+    
+    return embed
 
 
-def get_album_tracks(album_input):
-    if not sp:
-        return None, "Spotify API not configured"
+def create_result_embed(won, correct_song, artist, guesses_made, max_guesses):
+    if won:
+        color = discord.Color.gold()
+        title = "🎉 Correct!"
+        description = f"You guessed it right!\n**{correct_song}** by **{artist}**"
+    else:
+        color = discord.Color.dark_red()
+        title = "💔 Game Over"
+        description = f"The correct answer was:\n**{correct_song}** by **{artist}**"
     
-    album_id = extract_spotify_id(album_input, 'album')
-    if not album_id:
-        return None, "Invalid album URL or ID format"
+    embed = discord.Embed(
+        title=title,
+        description=description,
+        color=color
+    )
     
-    try:
-        results = sp.album_tracks(album_id)
-        if not results or not results.get('items'):
-            return None, "Album is empty or not found"
-        
-        album_info = sp.album(album_id)
-        artist_name = album_info['artists'][0]['name'] if album_info.get('artists') else 'Unknown'
-        
-        tracks = []
-        for track in results['items']:
-            tracks.append({
-                'name': track.get('name', 'Unknown'),
-                'artist': artist_name,
-                'id': track.get('id', '')
-            })
-        
-        if not tracks:
-            return None, "No valid tracks found in album"
-        
-        return tracks, None
-    except spotipy.exceptions.SpotifyException:
-        return None, "Album not found or is private"
-    except Exception:
-        return None, "Failed to fetch album data"
-
-
-def get_artist_top_tracks(artist_name):
-    if not sp:
-        return None, "Spotify API not configured"
+    embed.add_field(
+        name="Guesses Used",
+        value=f"{guesses_made}/{max_guesses}",
+        inline=True
+    )
     
-    if not artist_name or len(artist_name.strip()) == 0:
-        return None, "Artist name cannot be empty"
-    
-    try:
-        results = sp.search(q=f'artist:{artist_name}', type='artist', limit=1)
-        if not results or not results.get('artists') or not results['artists'].get('items'):
-            return None, f"Artist '{artist_name}' not found"
-        
-        artist = results['artists']['items'][0]
-        artist_id = artist['id']
-        
-        top_tracks = sp.artist_top_tracks(artist_id)
-        if not top_tracks or not top_tracks.get('tracks'):
-            return None, f"No tracks found for artist '{artist_name}'"
-        
-        tracks = []
-        for track in top_tracks['tracks']:
-            tracks.append({
-                'name': track.get('name', 'Unknown'),
-                'artist': artist['name'],
-                'id': track.get('id', '')
-            })
-        
-        if not tracks:
-            return None, f"No valid tracks found for artist '{artist_name}'"
-        
-        return tracks, None
-    except spotipy.exceptions.SpotifyException:
-        return None, f"Failed to search for artist '{artist_name}'"
-    except Exception:
-        return None, "Failed to fetch artist data"
+    return embed
 
 
 @bot.event
@@ -167,57 +91,123 @@ async def on_ready():
     name="guess",
     description="Guess the song from the lyrics. Requires spotify oauth connection.",
 )
-async def guess(
-    interaction: discord.Interaction,
-    source_type: str = "playlist",
-    source_input: str = ""
-):
-    if not sp:
+async def guess(interaction: discord.Interaction):
+    user_id = interaction.user.id
+    
+    if user_id in active_games:
         await interaction.response.send_message(
-            "Spotify API is not configured. Please add credentials to config.json",
+            "You already have an active game! Finish it first.",
             ephemeral=True
         )
         return
     
-    if not source_input:
-        await interaction.response.send_message(
-            "Please provide a playlist URL, album URL, or artist name",
-            ephemeral=True
-        )
-        return
+    songs = [
+        {"title": "Bohemian Rhapsody", "artist": "Queen", "hint": "Is this the real life? Is this just fantasy?"},
+        {"title": "Imagine", "artist": "John Lennon", "hint": "Imagine there's no heaven"},
+        {"title": "Smells Like Teen Spirit", "artist": "Nirvana", "hint": "Load up on guns, bring your friends"},
+        {"title": "Billie Jean", "artist": "Michael Jackson", "hint": "She was more like a beauty queen"},
+        {"title": "Hotel California", "artist": "Eagles", "hint": "On a dark desert highway"}
+    ]
     
-    await interaction.response.defer()
+    selected_song = random.choice(songs)
+    max_guesses = 6
     
-    tracks = None
-    error_msg = None
+    active_games[user_id] = {
+        "song": selected_song["title"],
+        "artist": selected_song["artist"],
+        "guesses_left": max_guesses,
+        "max_guesses": max_guesses,
+        "previous_guesses": []
+    }
     
-    if source_type.lower() == "playlist":
-        tracks, error_msg = get_playlist_tracks(source_input)
-    elif source_type.lower() == "album":
-        tracks, error_msg = get_album_tracks(source_input)
-    elif source_type.lower() == "artist":
-        tracks, error_msg = get_artist_top_tracks(source_input)
-    else:
-        error_msg = "Invalid source type. Use 'playlist', 'album', or 'artist'"
-    
-    if error_msg:
-        await interaction.followup.send(
-            f"Error: {error_msg}\nPlease check your input and try again.",
-            ephemeral=True
-        )
-        return
-    
-    if not tracks:
-        await interaction.followup.send(
-            "No tracks found. Please try again with a different source.",
-            ephemeral=True
-        )
-        return
-    
-    selected_track = random.choice(tracks)
-    await interaction.followup.send(
-        f"Game started! Guess the song:\n**Artist:** {selected_track['artist']}\n**Track:** {selected_track['name']}"
+    embed = create_game_embed(
+        selected_song["hint"],
+        max_guesses,
+        max_guesses
     )
+    
+    await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(
+    name="answer",
+    description="Submit your guess for the current song game."
+)
+async def answer(interaction: discord.Interaction, guess: str):
+    user_id = interaction.user.id
+    
+    if user_id not in active_games:
+        await interaction.response.send_message(
+            "You don't have an active game! Use /guess to start one.",
+            ephemeral=True
+        )
+        return
+    
+    game = active_games[user_id]
+    correct_song = game["song"].lower().strip()
+    user_guess = guess.lower().strip()
+    
+    if user_guess == correct_song:
+        guesses_made = game["max_guesses"] - game["guesses_left"] + 1
+        embed = create_result_embed(
+            True,
+            game["song"],
+            game["artist"],
+            guesses_made,
+            game["max_guesses"]
+        )
+        del active_games[user_id]
+        await interaction.response.send_message(embed=embed)
+        return
+    
+    game["guesses_left"] -= 1
+    game["previous_guesses"].append(guess)
+    
+    if game["guesses_left"] <= 0:
+        embed = create_result_embed(
+            False,
+            game["song"],
+            game["artist"],
+            game["max_guesses"],
+            game["max_guesses"]
+        )
+        del active_games[user_id]
+        await interaction.response.send_message(embed=embed)
+        return
+    
+    embed = create_game_embed(
+        "Try again! Think about the hint...",
+        game["guesses_left"],
+        game["max_guesses"],
+        game["previous_guesses"]
+    )
+    
+    await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(
+    name="endgame",
+    description="End your current song guessing game."
+)
+async def endgame(interaction: discord.Interaction):
+    user_id = interaction.user.id
+    
+    if user_id not in active_games:
+        await interaction.response.send_message(
+            "You don't have an active game!",
+            ephemeral=True
+        )
+        return
+    
+    game = active_games[user_id]
+    embed = discord.Embed(
+        title="Game Ended",
+        description=f"The answer was:\n**{game['song']}** by **{game['artist']}**",
+        color=discord.Color.blue()
+    )
+    
+    del active_games[user_id]
+    await interaction.response.send_message(embed=embed)
 
 
 bot.run(TOKEN)

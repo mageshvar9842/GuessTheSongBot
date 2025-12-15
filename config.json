@@ -1,4 +1,6 @@
 {
-    "DISCORD_TOKEN": "",
-    "DISCORD_BOT_ID": 0
+  "DISCORD_TOKEN": "",
+  "DISCORD_BOT_ID": "",
+  "SPOTIFY_CLIENT_ID": "",
+  "SPOTIFY_CLIENT_SECRET": ""
 }
